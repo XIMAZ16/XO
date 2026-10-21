@@ -83,13 +83,25 @@ class UltimateTicTacToeGame {
     this.initDOM();
     this.resetGame();
     this.bindEvents();
+    this.handleInviteLink();
   }
 
   loadScores() {
-    const defaultScores = { bot: { x: 0, o: 0, tie: 0 }, pvp: { x: 0, o: 0, tie: 0 } };
+    const defaultScores = {
+      bot: { x: 0, o: 0, tie: 0 },
+      pvp: { x: 0, o: 0, tie: 0 },
+      online: { x: 0, o: 0, tie: 0 }
+    };
     try {
       const saved = localStorage.getItem('retro_xo_scores');
-      return saved ? JSON.parse(saved) : defaultScores;
+      if (!saved) return defaultScores;
+      const parsed = JSON.parse(saved);
+      // Saves written before online mode existed have no online bucket.
+      const merged = {};
+      Object.keys(defaultScores).forEach((key) => {
+        merged[key] = Object.assign({}, defaultScores[key], parsed[key] || {});
+      });
+      return merged;
     } catch (e) {
       return defaultScores;
     }
@@ -111,6 +123,7 @@ class UltimateTicTacToeGame {
     this.scoreXEl = document.getElementById('score-x');
     this.scoreOEl = document.getElementById('score-o');
     this.scoreTieEl = document.getElementById('score-tie');
+    this.labelXEl = document.getElementById('label-x');
     this.labelOEl = document.getElementById('label-o');
 
     this.modeSelectBtns = document.querySelectorAll('.mode-btn');
@@ -139,6 +152,371 @@ class UltimateTicTacToeGame {
     this.closeRulesBtn = document.getElementById('close-rules-btn');
     this.restartBtn = document.getElementById('restart-btn');
     this.muteBtn = document.getElementById('mute-btn');
+
+    // Online 1v1 UI
+    this.onlineBarEl = document.getElementById('online-bar');
+    this.onlineCodeEl = document.getElementById('online-room-code');
+    this.onlineRoleEl = document.getElementById('online-role');
+    this.onlineStatusEl = document.getElementById('online-status');
+    this.copyLinkBtn = document.getElementById('copy-link-btn');
+    this.leaveRoomBtn = document.getElementById('leave-room-btn');
+
+    this.lobbyModalEl = document.getElementById('lobby-modal');
+    this.lobbyCreateBtn = document.getElementById('lobby-create-btn');
+    this.lobbyCloseBtn = document.getElementById('lobby-close-btn');
+    this.lobbyCodeBoxEl = document.getElementById('lobby-code-box');
+    this.lobbyCodeDisplayEl = document.getElementById('lobby-code-display');
+    this.lobbyCopyBtn = document.getElementById('lobby-copy-btn');
+    this.lobbyCodeInputEl = document.getElementById('lobby-code-input');
+    this.lobbyJoinBtn = document.getElementById('lobby-join-btn');
+    this.lobbyStatusEl = document.getElementById('lobby-status');
+    this.lobbyTransportEl = document.getElementById('lobby-transport');
+
+    this.initOnline();
+  }
+
+  /* ======================================================================
+     ONLINE 1v1
+     Host (room creator) is X and owns the authoritative board. The guest is
+     O and sends move requests; the host applies them and broadcasts a
+     snapshot. Both clients therefore always agree on the position.
+     ====================================================================== */
+
+  initOnline() {
+    this.online = {
+      active: false,
+      code: null,
+      isHost: false,
+      myMark: null,
+      peerOnline: false,
+      joined: false
+    };
+
+    this.net = new XONet({
+      onMessage: (msg) => this.handleNetMessage(msg),
+      onPeerChange: (online) => this.handlePeerChange(online),
+      onStatus: (status) => this.handleNetStatus(status)
+    });
+
+    this.updateOnlineBar();
+  }
+
+  generateRoomCode() {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+      code += alphabet[Math.floor(Math.random() * alphabet.length)];
+    }
+    return code;
+  }
+
+  markModeButton(mode) {
+    this.modeSelectBtns.forEach((btn) => {
+      btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+  }
+
+  applyModeUI() {
+    const isBot = this.mode === 'bot';
+    this.diffContainerEl.style.display = isBot ? 'flex' : 'none';
+    if (this.botChatSectionEl) {
+      this.botChatSectionEl.style.display = isBot ? 'flex' : 'none';
+    }
+    this.updateOnlineBar();
+  }
+
+  canPlayNow() {
+    if (this.gameOver) return false;
+    if (this.mode === 'bot') return !this.isAiThinking;
+    if (this.mode === 'online') {
+      if (!this.online.active || !this.online.joined || !this.online.peerOnline) return false;
+      return this.currentPlayer === this.online.myMark;
+    }
+    return true;
+  }
+
+  openLobby() {
+    this.lobbyStatusEl.textContent = '';
+    this.lobbyCodeBoxEl.classList.add('hidden');
+    this.lobbyTransportEl.textContent = XONet.transportName() === 'pubnub'
+      ? 'โหมดออนไลน์: PubNub — เล่นข้ามเครื่องได้'
+      : 'โหมดทดสอบ: ใช้ได้เฉพาะแท็บ/หน้าต่างในเบราว์เซอร์เดียวกัน (ใส่คีย์ PubNub ใน net-config.js เพื่อเล่นข้ามเครื่อง)';
+    this.lobbyModalEl.classList.remove('hidden');
+    this.updateOnlineBar();
+  }
+
+  closeLobby() {
+    this.lobbyModalEl.classList.add('hidden');
+  }
+
+  cancelLobby() {
+    this.closeLobby();
+    if (!this.online.active && this.mode === 'online') {
+      this.mode = 'bot';
+      this.markModeButton('bot');
+      this.applyModeUI();
+      this.resetGame();
+    }
+  }
+
+  createRoom() {
+    const code = this.generateRoomCode();
+    this.transportWarning = null;
+    this.online = { active: true, code, isHost: true, myMark: 'X', peerOnline: false, joined: true };
+    this.mode = 'online';
+    this.markModeButton('online');
+    this.applyModeUI();
+
+    this.lobbyCodeBoxEl.classList.remove('hidden');
+    this.lobbyCodeDisplayEl.textContent = code;
+    this.lobbyStatusEl.textContent = 'รอคู่แข่งเข้าห้อง...';
+
+    this.updateOnlineBar();
+    this.resetGame();
+    this.net.connect(code);
+  }
+
+  joinRoom(input) {
+    const code = String(input || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    if (code.length !== 6) {
+      this.lobbyStatusEl.textContent = 'รหัสห้องต้องมี 6 ตัวอักษร';
+      return;
+    }
+
+    this.transportWarning = null;
+    this.online = { active: true, code, isHost: false, myMark: 'O', peerOnline: false, joined: true };
+    this.mode = 'online';
+    this.markModeButton('online');
+    this.applyModeUI();
+
+    this.lobbyCodeBoxEl.classList.remove('hidden');
+    this.lobbyCodeDisplayEl.textContent = code;
+    this.lobbyStatusEl.textContent = `กำลังเข้าห้อง ${code}...`;
+    this.updateOnlineBar();
+    this.resetGame();
+
+    this.net.connect(code).then((ok) => {
+      if (ok) this.net.send({ type: 'hello' });
+    });
+  }
+
+  leaveRoom() {
+    if (this.net) {
+      this.net.send({ type: 'leave' });
+      this.net.disconnect();
+    }
+    this.online = { active: false, code: null, isHost: false, myMark: null, peerOnline: false, joined: false };
+    this.closeLobby();
+    this.updateOnlineBar();
+  }
+
+  getRoomLink() {
+    const base = location.origin && location.origin !== 'null'
+      ? location.origin + location.pathname
+      : null;
+    return base ? `${base}?room=${this.online.code}` : null;
+  }
+
+  async copyRoomLink() {
+    if (!this.online.code) return;
+    const link = this.getRoomLink();
+    const text = link || this.online.code;
+    let copied = false;
+
+    try {
+      await navigator.clipboard.writeText(text);
+      copied = true;
+    } catch (e) {
+      copied = false;
+    }
+
+    const message = copied
+      ? (link ? 'คัดลอกลิงก์เชิญแล้ว ส่งให้เพื่อนได้เลย!' : `คัดลอกรหัส ${this.online.code} แล้ว`)
+      : (link ? `ส่งลิงก์นี้ให้เพื่อน: ${link}` : `รหัสห้อง: ${this.online.code}`);
+
+    this.lobbyStatusEl.textContent = message;
+    this.onlineStatusEl.title = message;
+  }
+
+  handleInviteLink() {
+    let raw = null;
+    try {
+      raw = new URLSearchParams(location.search).get('room');
+    } catch (e) {
+      raw = null;
+    }
+    if (!raw) return;
+
+    const code = raw.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
+    if (code.length !== 6) return;
+
+    this.markModeButton('online');
+    this.openLobby();
+    this.joinRoom(code);
+  }
+
+  updateOnlineBar() {
+    if (!this.onlineBarEl) return;
+    const active = this.mode === 'online' && this.online.active;
+    this.onlineBarEl.classList.toggle('hidden', !active);
+    if (!active) return;
+
+    this.onlineCodeEl.textContent = this.online.code || '------';
+    this.onlineRoleEl.textContent = this.online.isHost ? 'เจ้าของห้อง (X)' : 'ผู้เข้าร่วม (O)';
+
+    const transport = XONet.transportName() === 'pubnub' ? 'PubNub' : 'ทดสอบในเบราว์เซอร์';
+
+    if (this.transportWarning) {
+      this.onlineStatusEl.textContent = 'เชื่อมต่อไม่สำเร็จ';
+      this.onlineStatusEl.className = 'online-status is-error';
+      this.onlineStatusEl.title = this.transportWarning;
+      return;
+    }
+
+    this.onlineStatusEl.textContent = this.online.peerOnline ? 'คู่แข่งออนไลน์' : 'รอคู่แข่ง...';
+    this.onlineStatusEl.className = this.online.peerOnline
+      ? 'online-status is-online'
+      : 'online-status is-waiting';
+    this.onlineStatusEl.title = this.online.peerOnline
+      ? `คู่แข่งเชื่อมต่อแล้ว — ช่องทาง: ${transport}`
+      : `กำลังรอคู่แข่งเข้าห้อง — ช่องทาง: ${transport}`;
+  }
+
+  handleNetStatus(status) {
+    if (status.state === 'error' && status.message) {
+      this.transportWarning = status.message;
+      if (this.lobbyStatusEl) this.lobbyStatusEl.textContent = status.message;
+      this.updateOnlineBar();
+      return;
+    }
+
+    if (status.state === 'connected' && status.transport === 'pubnub') {
+      this.transportWarning = null;
+      this.updateOnlineBar();
+    }
+  }
+
+  handlePeerChange(peerOnline) {
+    if (!this.online.active) return;
+    this.online.peerOnline = peerOnline;
+
+    if (peerOnline) {
+      this.lobbyStatusEl.textContent = 'คู่แข่งเชื่อมต่อแล้ว เริ่มเกมได้เลย!';
+      this.closeLobby();
+    } else {
+      this.lobbyStatusEl.textContent = 'คู่แข่งหลุดการเชื่อมต่อ...';
+    }
+
+    this.updateOnlineBar();
+    this.renderBoard();
+    this.updateStatus();
+  }
+
+  handleNetMessage(msg) {
+    if (!this.online.active || !msg || typeof msg.type !== 'string') return;
+
+    switch (msg.type) {
+      case 'hello':
+        if (this.online.isHost) {
+          this.broadcastState();
+          this.lobbyStatusEl.textContent = 'คู่แข่งเข้าห้องแล้ว! เริ่มเกมได้เลย';
+          this.closeLobby();
+        }
+        break;
+
+      case 'state':
+        if (!this.online.isHost) {
+          this.applyRemoteState(msg.state);
+          this.closeLobby();
+        }
+        break;
+
+      case 'move':
+        if (this.online.isHost) this.applyGuestMove(msg.b, msg.c);
+        break;
+
+      case 'restart':
+        if (this.online.isHost) this.resetGame();
+        break;
+
+      case 'leave':
+        this.lobbyStatusEl.textContent = 'คู่แข่งออกจากห้องแล้ว';
+        this.updateOnlineBar();
+        break;
+    }
+  }
+
+  broadcastState() {
+    if (!this.online || !this.online.active || !this.online.isHost || !this.net) return;
+    this.net.send({
+      type: 'state',
+      state: {
+        board: this.board,
+        miniBoardStatus: this.miniBoardStatus,
+        activeBoard: this.activeBoard,
+        currentPlayer: this.currentPlayer,
+        gameOver: this.gameOver,
+        winner: this.winner,
+        mainWinLine: this.mainWinLine,
+        lastMove: this.lastMove
+      }
+    });
+  }
+
+  applyGuestMove(b, c) {
+    if (this.gameOver) return;
+    if (typeof b !== 'number' || typeof c !== 'number') return;
+    if (this.currentPlayer !== 'O') return;
+    if (!this.isMoveLegal(b, c)) return;
+
+    this.executeMove(b, c);
+    this.broadcastState();
+  }
+
+  applyRemoteState(state) {
+    if (!state) return;
+
+    const wasOver = this.gameOver;
+    const previousMove = this.lastMove ? `${this.lastMove.b}-${this.lastMove.c}` : null;
+
+    this.board = state.board.map((row) => row.slice());
+    this.miniBoardStatus = state.miniBoardStatus.slice();
+    this.activeBoard = state.activeBoard;
+    this.currentPlayer = state.currentPlayer;
+    this.gameOver = state.gameOver;
+    this.winner = state.winner;
+    this.mainWinLine = state.mainWinLine ? state.mainWinLine.slice() : null;
+    this.isAiThinking = false;
+
+    const nextMove = state.lastMove ? `${state.lastMove.b}-${state.lastMove.c}` : null;
+    this.lastMove = state.lastMove || null;
+    if (nextMove && nextMove !== previousMove && window.retroAudio) {
+      window.retroAudio.playMove(state.lastMove.player);
+    }
+
+    // A snapshot with no winner means a fresh round: clear the old overlay.
+    if (!this.gameOver) this.hideModal();
+
+    this.renderBoard();
+    this.updateStatus();
+    this.updateScoreboardDisplay();
+
+    if (!wasOver && this.gameOver) {
+      this.handleGameOver(this.winner);
+    }
+  }
+
+  requestRematch() {
+    if (this.mode !== 'online') {
+      this.resetGame();
+      return;
+    }
+    if (this.online.isHost) {
+      this.resetGame();
+    } else {
+      this.net.send({ type: 'restart' });
+      this.lobbyStatusEl.textContent = 'ขอเล่นใหม่อีกครั้ง...';
+    }
   }
 
   botSpeak(category, customText = null) {
@@ -214,6 +592,10 @@ class UltimateTicTacToeGame {
       this.botSpeak('playerTurnStart');
       this.startPlayerIdleTimer();
     }
+
+    if (this.mode === 'online' && this.online.active && this.online.isHost) {
+      this.broadcastState();
+    }
   }
 
   renderBoard() {
@@ -254,7 +636,7 @@ class UltimateTicTacToeGame {
         if (val) {
           cellEl.textContent = val;
           cellEl.classList.add(`marked-${val.toLowerCase()}`);
-        } else if (isActive && !this.isAiThinking) {
+        } else if (isActive && this.canPlayNow()) {
           cellEl.classList.add('cell-clickable');
         } else {
           cellEl.classList.add('cell-disabled');
@@ -290,11 +672,28 @@ class UltimateTicTacToeGame {
     if (this.mode === 'bot' && this.currentPlayer === this.aiPlayer) return;
     if (this.isAiThinking) return;
 
+    // Online: only on your own turn, and only once the opponent is here
+    if (this.mode === 'online' && !this.canPlayNow()) {
+      this.shakeElement(cellEl);
+      return;
+    }
+
     // Validate if move is legal
     const isLegal = this.isMoveLegal(b, c);
     if (!isLegal) {
       if (window.retroAudio) window.retroAudio.playInvalid();
       this.shakeElement(cellEl);
+      return;
+    }
+
+    // Online: the host applies moves and broadcasts; the guest only asks.
+    if (this.mode === 'online') {
+      if (this.online.isHost) {
+        this.executeMove(b, c);
+        this.broadcastState();
+      } else {
+        this.net.send({ type: 'move', b, c });
+      }
       return;
     }
 
@@ -564,6 +963,14 @@ class UltimateTicTacToeGame {
       this.turnIndicatorEl.classList.remove('is-thinking');
       if (this.mode === 'bot') {
         this.turnTextEl.textContent = this.currentPlayer === 'X' ? 'ตาของคุณ (X)' : 'ตาของบอท (O)';
+      } else if (this.mode === 'online') {
+        if (!this.online.peerOnline) {
+          this.turnTextEl.textContent = 'รอคู่แข่งเชื่อมต่อ...';
+        } else if (this.currentPlayer === this.online.myMark) {
+          this.turnTextEl.textContent = `ตาคุณ (${this.currentPlayer})`;
+        } else {
+          this.turnTextEl.textContent = `ตาคู่แข่ง (${this.currentPlayer})`;
+        }
       } else {
         this.turnTextEl.textContent = `ตาผู้เล่น ${this.currentPlayer}`;
       }
@@ -579,14 +986,19 @@ class UltimateTicTacToeGame {
   }
 
   updateScoreboardDisplay() {
-    const curScores = this.scores[this.mode];
+    const curScores = this.scores[this.mode] || { x: 0, o: 0, tie: 0 };
     this.scoreXEl.textContent = curScores.x;
-    this.scoreOEl = curScores.o;
+    this.scoreOEl.textContent = curScores.o;
     this.scoreTieEl.textContent = curScores.tie;
 
     if (this.mode === 'bot') {
+      this.labelXEl.textContent = 'ผู้เล่น X';
       this.labelOEl.textContent = 'บอท (O)';
+    } else if (this.mode === 'online') {
+      this.labelXEl.textContent = this.online.myMark === 'X' ? 'คุณ (X)' : 'คู่แข่ง (X)';
+      this.labelOEl.textContent = this.online.myMark === 'O' ? 'คุณ (O)' : 'คู่แข่ง (O)';
     } else {
+      this.labelXEl.textContent = 'ผู้เล่น X';
       this.labelOEl.textContent = 'ผู้เล่น O';
     }
   }
@@ -598,17 +1010,24 @@ class UltimateTicTacToeGame {
       this.modalIconEl.textContent = '⚖️';
       this.modalIconEl.className = 'modal-icon tie-glow';
     } else {
-      const isPlayerWinner = (this.mode === 'bot' && winner === 'X') || this.mode === 'pvp';
+      const isPlayerWinner = (this.mode === 'bot' && winner === 'X') || this.mode === 'pvp' ||
+        (this.mode === 'online' && winner === this.online.myMark);
       if (isPlayerWinner) {
         this.modalTitleEl.textContent = `VICTORY! ${winner} WINS`;
-        this.modalSubtitleEl.textContent = this.mode === 'bot' 
-          ? `ยอดเยี่ยมมาก! คุณเอาชนะบอทระดับ ${this.getDifficultyThai()} ได้สำเร็จ!`
-          : `ขอแสดงความยินดีกับ ผู้เล่น ${winner} คว้าชัยชนะกระดานใหญ่!`;
+        if (this.mode === 'bot') {
+          this.modalSubtitleEl.textContent = `ยอดเยี่ยมมาก! คุณเอาชนะบอทระดับ ${this.getDifficultyThai()} ได้สำเร็จ!`;
+        } else if (this.mode === 'online') {
+          this.modalSubtitleEl.textContent = 'คุณเอาชนะคู่แข่งออนไลน์ได้สำเร็จ! สุดยอดมาก!';
+        } else {
+          this.modalSubtitleEl.textContent = `ขอแสดงความยินดีกับ ผู้เล่น ${winner} คว้าชัยชนะกระดานใหญ่!`;
+        }
         this.modalIconEl.textContent = winner === 'X' ? '⚡' : '👑';
         this.modalIconEl.className = `modal-icon ${winner.toLowerCase()}-glow`;
       } else {
         this.modalTitleEl.textContent = 'GAME OVER!';
-        this.modalSubtitleEl.textContent = `บอทระดับ ${this.getDifficultyThai()} ชนะในรอบนี้ ลองใหม่อีกครั้ง!`;
+        this.modalSubtitleEl.textContent = this.mode === 'online'
+          ? 'คู่แข่งชนะในรอบนี้ ลองใหม่อีกครั้ง!'
+          : `บอทระดับ ${this.getDifficultyThai()} ชนะในรอบนี้ ลองใหม่อีกครั้ง!`;
         this.modalIconEl.textContent = '🤖';
         this.modalIconEl.className = 'modal-icon o-glow';
       }
@@ -638,21 +1057,24 @@ class UltimateTicTacToeGame {
       btn.addEventListener('click', () => {
         if (window.retroAudio) window.retroAudio.playClick();
         const newMode = btn.dataset.mode;
-        if (newMode === this.mode) return;
+        if (newMode === this.mode && newMode !== 'online') return;
+
+        if (this.mode === 'online' && newMode !== 'online') this.leaveRoom();
+        if (this.mode === 'online' && newMode === 'online') {
+          this.openLobby();
+          return;
+        }
 
         this.modeSelectBtns.forEach(b => b.classList.remove('active'));
         btn.classList.add('active');
         this.mode = newMode;
+        this.applyModeUI();
 
-        if (this.mode === 'bot') {
-          this.diffContainerEl.style.display = 'flex';
-          if (this.botChatSectionEl) this.botChatSectionEl.style.display = 'flex';
+        if (newMode === 'online') {
+          this.openLobby();
         } else {
-          this.diffContainerEl.style.display = 'none';
-          if (this.botChatSectionEl) this.botChatSectionEl.style.display = 'none';
+          this.resetGame();
         }
-
-        this.resetGame();
       });
     });
 
@@ -684,12 +1106,65 @@ class UltimateTicTacToeGame {
     // Restart button
     this.restartBtn.addEventListener('click', () => {
       if (window.retroAudio) window.retroAudio.playClick();
-      this.resetGame();
+      this.requestRematch();
     });
 
     // Play again modal button
     this.playAgainBtn.addEventListener('click', () => {
       if (window.retroAudio) window.retroAudio.playClick();
+      this.requestRematch();
+    });
+
+    // Online lobby controls
+    this.lobbyCreateBtn.addEventListener('click', () => {
+      if (window.retroAudio) window.retroAudio.playClick();
+      this.createRoom();
+    });
+
+    this.lobbyJoinBtn.addEventListener('click', () => {
+      if (window.retroAudio) window.retroAudio.playClick();
+      this.joinRoom(this.lobbyCodeInputEl.value);
+    });
+
+    this.lobbyCodeInputEl.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        this.joinRoom(this.lobbyCodeInputEl.value);
+      }
+    });
+
+    this.lobbyCodeInputEl.addEventListener('input', () => {
+      this.lobbyCodeInputEl.value = this.lobbyCodeInputEl.value
+        .toUpperCase()
+        .replace(/[^A-Z0-9]/g, '')
+        .slice(0, 6);
+    });
+
+    this.lobbyCloseBtn.addEventListener('click', () => {
+      if (window.retroAudio) window.retroAudio.playClick();
+      this.cancelLobby();
+    });
+
+    this.lobbyModalEl.addEventListener('click', (event) => {
+      if (event.target === this.lobbyModalEl) this.cancelLobby();
+    });
+
+    this.lobbyCopyBtn.addEventListener('click', () => {
+      if (window.retroAudio) window.retroAudio.playClick();
+      this.copyRoomLink();
+    });
+
+    this.copyLinkBtn.addEventListener('click', () => {
+      if (window.retroAudio) window.retroAudio.playClick();
+      this.copyRoomLink();
+    });
+
+    this.leaveRoomBtn.addEventListener('click', () => {
+      if (window.retroAudio) window.retroAudio.playClick();
+      this.leaveRoom();
+      this.mode = 'bot';
+      this.markModeButton('bot');
+      this.applyModeUI();
       this.resetGame();
     });
 
