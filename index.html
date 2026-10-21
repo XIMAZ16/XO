@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Ultimate Tic-Tac-Toe - เกม XO ตารางซ้อน 3×3 (Retro Arcade)</title>
+  
+  <!-- Google Fonts: Retro Arcade & Gaming Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@400;600;700&family=Press+Start+2P&display=swap" rel="stylesheet">
+  
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- Retro CRT Scanline Filter -->
+  <div class="scanlines"></div>
+
+  <div class="game-container">
+    <!-- Header -->
+    <header class="arcade-header">
+      <h1 class="title-badge">
+        <span class="accent-x">ULTIMATE</span>
+        <span class="accent-o">XO</span>
+      </h1>
+      <p class="subtitle">เกม XO ตารางซ้อน 3×3 (81 ช่อง)</p>
+    </header>
+
+    <!-- Controls Bar -->
+    <nav class="controls-bar" aria-label="Game Controls">
+      <!-- Game Mode Selection -->
+      <div class="button-group" role="group" aria-label="โหมดเกม">
+        <button class="mode-btn active" data-mode="bot" id="mode-bot">
+          <span>🤖</span> สู้กับบอท
+        </button>
+        <button class="mode-btn" data-mode="pvp" id="mode-pvp">
+          <span>👥</span> สู้กับเพื่อน (2P)
+        </button>
+      </div>
+
+      <!-- Difficulty Selection (Active in Bot Mode) -->
+      <div class="button-group" id="difficulty-container" role="group" aria-label="ระดับความยากบอท">
+        <button class="diff-btn" data-diff="easy">ง่าย</button>
+        <button class="diff-btn active" data-diff="medium">ปานกลาง</button>
+        <button class="diff-btn" data-diff="hard">ยาก</button>
+      </div>
+
+      <!-- Quick Action Buttons -->
+      <div class="button-group">
+        <button class="icon-btn" id="mute-btn" title="เปิด/ปิดเสียง" aria-label="เปิด/ปิดเสียง">🔊</button>
+        <button class="icon-btn" id="open-rules-btn" title="กติกาการเล่น" aria-label="กติกาการเล่น">❓ กติกา</button>
+        <button class="icon-btn" id="restart-btn" title="เริ่มเกมใหม่" aria-label="เริ่มเกมใหม่">🔄 รีเซ็ต</button>
+      </div>
+    </nav>
+
+    <!-- Scoreboard -->
+    <section class="scoreboard" aria-label="ตารางคะแนน">
+      <div class="score-box score-x">
+        <span class="score-label" id="label-x">ผู้เล่น X</span>
+        <span class="score-val" id="score-x">0</span>
+      </div>
+      <div class="score-box score-tie">
+        <span class="score-label">เสมอ (TIE)</span>
+        <span class="score-val" id="score-tie">0</span>
+      </div>
+      <div class="score-box score-o">
+        <span class="score-label" id="label-o">บอท (O)</span>
+        <span class="score-val" id="score-o">0</span>
+      </div>
+    </section>
+
+    <!-- Bot Speech Bubble Section (Interactive AI Banter) -->
+    <section class="bot-chat-section" id="bot-chat-section" aria-label="บทสนทนาของบอท">
+      <div class="bot-avatar-wrapper">
+        <div class="bot-avatar" id="bot-avatar">🤖</div>
+        <div class="bot-status-tag" id="bot-status-tag">PRO CPU</div>
+      </div>
+      <div class="bot-speech-bubble" id="bot-speech-bubble">
+        <div class="speech-arrow"></div>
+        <p class="speech-text" id="speech-text">พร้อมจะดวล Ultimate XO รึยังเพื่อน? ลุยเลย!</p>
+      </div>
+      <button class="chat-toggle-btn" id="chat-toggle-btn" title="เปิด/ปิดคำพูดบอท" aria-label="เปิด/ปิดคำพูดบอท">💬</button>
+    </section>
+
+    <!-- Turn Indicator & Hint Banner -->
+    <section class="status-panel" aria-live="polite">
+      <div class="turn-indicator" id="turn-indicator">
+        <span class="player-badge badge-x" id="turn-player-mark">X</span>
+        <span id="turn-text">ตาของคุณ (X)</span>
+      </div>
+      <div class="board-hint" id="board-hint">
+        <span class="badge-free">★ เลือกเดินอิสระ</span> ในกระดานเล็กใดก็ได้!
+      </div>
+    </section>
+
+    <!-- Main Game Board 3x3 of 3x3 (81 cells) -->
+    <main class="board-wrapper">
+      <div class="main-board" id="main-board" role="grid" aria-label="กระดาน Ultimate Tic-Tac-Toe">
+        <!-- Rendered dynamically by game.js -->
+      </div>
+    </main>
+  </div>
+
+  <!-- Victory / Game Over Modal -->
+  <div class="modal-backdrop hidden" id="result-modal" role="dialog" aria-modal="true">
+    <div class="modal-box">
+      <div class="modal-icon" id="modal-icon">🏆</div>
+      <h2 class="modal-title" id="modal-title">VICTORY!</h2>
+      <p class="modal-subtitle" id="modal-subtitle">ผู้เล่น X เป็นฝ่ายชนะการประลอง!</p>
+      <button class="modal-btn" id="play-again-btn">เล่นใหม่อีกครั้ง 🕹️</button>
+    </div>
+  </div>
+
+  <!-- Rules Explanation Modal -->
+  <div class="modal-backdrop hidden" id="rules-modal" role="dialog" aria-modal="true">
+    <div class="modal-box rules-box">
+      <button class="modal-close-icon" id="close-rules-btn" aria-label="ปิดหน้าต่าง">&times;</button>
+      <h2>กติกา ULTIMATE XO</h2>
+      <div class="rules-content">
+        <div class="rule-item">
+          <strong>1. โครงสร้างกระดาน (9 กระดานย่อย รวม 81 ช่อง)</strong>
+          กระดานหลักมี 9 ช่องใหญ่ แต่ละช่องใหญ่มีกระดาน XO เล็ก 3×3 ซ้อนอยู่ภายใน
+        </div>
+        <div class="rule-item">
+          <strong>2. ตำแหน่งที่ลง ส่งผลต่อตาถัดไปของคู่แข่ง</strong>
+          ผู้เล่น X เริ่มเล่นก่อน โดยลงที่ช่องเล็กใดก็ได้ และ<strong>ตำแหน่งช่องเล็กที่เลือกลง จะเป็นตัวกำหนดว่าคู่แข่งต้องไปเล่นในกระดานใหญ่ช่องใด</strong> (เช่น หากลงช่องมุมบนขวาในกระดานเล็ก คู่แข่งก็ต้องไปเล่นในกระดานใหญ่มุมบนขวา)
+        </div>
+        <div class="rule-item">
+          <strong>3. การชนะกระดานเล็ก</strong>
+          เมื่อเรียงสัญลักษณ์ 3 ช่องติดกันในกระดานเล็กได้ จะถือว่าชนะกระดานนั้นทันที และกระดานนั้นจะถูกครอบครองด้วยสัญลักษณ์ยักษ์
+        </div>
+        <div class="rule-item rule-highlight">
+          <strong>4. หากถูกส่งไปกระดานที่จบแล้ว หรือ กระดานเสมอกัน</strong>
+          หากคู่แข่งส่งคุณไปยังกระดานเล็กที่มีผู้ชนะแล้วหรือเสมอกัน คุณจะได้รับสิทธิ์ <em>"Free Choice"</em> สามารถเลือกเดินในกระดานเล็กใดก็ได้ที่ยังเปิดอยู่!
+          <br>
+          <em>*กระดานเล็กที่เสมอกัน (เต็ม 9 ช่องไม่มีใครได้ 3 แถว) จะนับว่าทั้ง X และ O ได้ช่องนั้นร่วมกันในการเรียงกระดานใหญ่</em>
+        </div>
+        <div class="rule-item">
+          <strong>5. เงื่อนไขชนะเกมหลัก</strong>
+          ผู้เล่นคนแรกที่สามารถ<strong>ชนะกระดานเล็กเรียงกัน 3 กระดาน</strong> (แนวนอน, แนวตั้ง หรือแนวทแยง) ในกระดานหลัก จะเป็นผู้ชนะเกมทันที!
+        </div>
+      </div>
+      <button class="modal-btn" style="margin-top: 12px; width: 100%;" onclick="document.getElementById('rules-modal').classList.add('hidden')">เข้าใจแล้ว ลุยเลย! 🚀</button>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="audio.js"></script>
+  <script src="ai.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>
